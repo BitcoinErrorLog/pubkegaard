@@ -2,9 +2,12 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use simple_dns::rdata::RData;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +69,8 @@ struct AppState {
     local_address: Option<String>,
     listen_port: u16,
     endpoint_host: Option<String>,
+    homeserver_url: Option<String>,
+    pkarr_pointer: Option<String>,
     discovery_published: bool,
     wireguard_state: WireGuardState,
     session_mode: SessionMode,
@@ -102,6 +107,13 @@ struct ToolStatus {
     details: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryPublishResult {
+    document_url: String,
+    pkarr_pointer: String,
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -112,6 +124,8 @@ impl Default for AppState {
             local_address: None,
             listen_port: 51820,
             endpoint_host: None,
+            homeserver_url: None,
+            pkarr_pointer: None,
             discovery_published: false,
             wireguard_state: WireGuardState::NotConfigured,
             session_mode: SessionMode::None,
@@ -238,6 +252,110 @@ fn export_peer_profile(
 }
 
 #[tauri::command]
+fn configure_homeserver(homeserver_url: String, session_token: String) -> Result<AppState, String> {
+    let mut state = read_state().map_err(|error| error.to_string())?;
+    let identity = state
+        .identity
+        .clone()
+        .ok_or("complete onboarding before configuring homeserver")?;
+    let url = normalize_homeserver_url(&homeserver_url)?;
+    if session_token.trim().is_empty() {
+        return Err("session token is required".to_string());
+    }
+    store_secret("homeserver-session-token", session_token.trim())
+        .map_err(|error| error.to_string())?;
+    state.homeserver_url = Some(url);
+    state.session_mode = SessionMode::LocalKeys;
+    state.warnings = warnings_for(&state);
+    write_state(&state).map_err(|error| error.to_string())?;
+    let _ = identity;
+    Ok(state)
+}
+
+#[tauri::command]
+fn publish_discovery() -> Result<DiscoveryPublishResult, String> {
+    let mut state = read_state().map_err(|error| error.to_string())?;
+    let document = discovery_document_from_state(&state)?;
+    let homeserver_url = state
+        .homeserver_url
+        .clone()
+        .ok_or("configure homeserver before publishing discovery")?;
+    let identity = state.identity.clone().ok_or("missing Pubky identity")?;
+    let token = load_secret("homeserver-session-token")?;
+    let document_url = format!(
+        "{}/pub/pubkegaard/v1/discovery.json",
+        homeserver_url.trim_end_matches('/')
+    );
+    let body = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+    let response = reqwest::blocking::Client::new()
+        .put(&document_url)
+        .header(reqwest::header::COOKIE, format!("{identity}={token}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "homeserver publish failed with {}",
+            response.status()
+        ));
+    }
+
+    let pointer = pubkegaard_discovery::CompactPointer::new(
+        document_url.clone(),
+        document.hash_hex().map_err(|error| error.to_string())?,
+        document.sequence,
+        document.expires_at_ms,
+    );
+    let pointer_text = pointer.render();
+    publish_pkarr_pointer(&pointer_text)?;
+    state.pkarr_pointer = Some(pointer_text.clone());
+    state.discovery_published = true;
+    state.warnings = warnings_for(&state);
+    write_state(&state).map_err(|error| error.to_string())?;
+    Ok(DiscoveryPublishResult {
+        document_url,
+        pkarr_pointer: pointer_text,
+    })
+}
+
+#[tauri::command]
+fn add_peer_by_pubky(identity: String, preset: PeerPreset) -> Result<AppState, String> {
+    let identity = pubkegaard_types::PubkyId::parse(identity).map_err(|error| error.to_string())?;
+    let document = resolve_peer_discovery(&identity)?;
+    let device = document
+        .devices
+        .first()
+        .ok_or("resolved discovery document has no devices")?;
+    let endpoint = device.endpoints.first();
+    let mut state = read_state().map_err(|error| error.to_string())?;
+    if state
+        .peers
+        .iter()
+        .any(|peer| peer.identity == identity.as_str())
+    {
+        return Err("peer already exists".to_string());
+    }
+    state.peers.push(Peer {
+        identity: identity.to_string(),
+        label: Some(device.device_id.clone()),
+        preset,
+        wireguard_public_key: device.wg_public_key.as_base64().to_string(),
+        address: device
+            .addresses
+            .first()
+            .ok_or("peer has no overlay address")?
+            .to_string(),
+        endpoint_host: endpoint.map(|endpoint| endpoint.host.clone()),
+        endpoint_port: endpoint.map(|endpoint| endpoint.port).unwrap_or(51820),
+        connection_state: ConnectionState::Stopped,
+    });
+    state.warnings = warnings_for(&state);
+    write_state(&state).map_err(|error| error.to_string())?;
+    Ok(state)
+}
+
+#[tauri::command]
 fn remove_peer(identity: String) -> Result<AppState, String> {
     let mut state = read_state().map_err(|error| error.to_string())?;
     state.peers.retain(|peer| peer.identity != identity);
@@ -356,6 +474,14 @@ fn warnings_for(state: &AppState) -> Vec<String> {
     if state.session_mode == SessionMode::RingSession {
         warnings.push("Ring session mode cannot replace root/binding authorization.".to_string());
     }
+    if state.homeserver_url.is_none() {
+        warnings.push(
+            "Homeserver session is not configured; discovery cannot be published.".to_string(),
+        );
+    }
+    if !state.discovery_published {
+        warnings.push("Discovery has not been published to homeserver/PKARR yet.".to_string());
+    }
     if !verify_wireguard_tools().wg_quick {
         warnings.push(
             "WireGuard tools are not installed. Run: brew install wireguard-tools".to_string(),
@@ -375,6 +501,63 @@ fn warnings_for(state: &AppState) -> Vec<String> {
     warnings
 }
 
+fn discovery_document_from_state(
+    state: &AppState,
+) -> Result<pubkegaard_types::DiscoveryDocument, String> {
+    let identity =
+        pubkegaard_types::PubkyId::parse(state.identity.clone().ok_or("missing Pubky identity")?)
+            .map_err(|error| error.to_string())?;
+    let noise_control_key = pubkegaard_types::NoiseControlPublicKey::parse(
+        state
+            .noise_control_public_key
+            .clone()
+            .ok_or("missing noise control key")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let wg_public_key = pubkegaard_types::WireGuardPublicKey::parse(
+        state
+            .wireguard_public_key
+            .clone()
+            .ok_or("missing WireGuard public key")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let address = state
+        .local_address
+        .clone()
+        .ok_or("missing local overlay address")?
+        .parse()
+        .map_err(|error| format!("invalid local address: {error}"))?;
+    let mut endpoints = Vec::new();
+    if let Some(host) = &state.endpoint_host {
+        endpoints.push(pubkegaard_types::Endpoint {
+            host: host.clone(),
+            port: state.listen_port,
+            priority: 10,
+        });
+    }
+    let now = now_ms()?;
+    Ok(pubkegaard_types::DiscoveryDocument {
+        r#type: pubkegaard_types::DISCOVERY_TYPE.to_string(),
+        version: pubkegaard_types::VERSION_1,
+        identity,
+        sequence: now,
+        created_at_ms: now,
+        expires_at_ms: now + 86_400_000,
+        devices: vec![pubkegaard_types::Device {
+            device_id: state.device_label.clone(),
+            noise_control_key,
+            wg_public_key,
+            addresses: vec![address],
+            endpoints,
+            routes: Vec::new(),
+            capabilities: pubkegaard_types::Permissions {
+                mesh: true,
+                ..pubkegaard_types::Permissions::default()
+            },
+        }],
+    })
+}
+
 fn validate_peer_profile(profile: &PeerProfile) -> Result<(), String> {
     if profile.version != 1 {
         return Err("unsupported peer profile version".to_string());
@@ -392,6 +575,95 @@ fn validate_peer_profile(profile: &PeerProfile) -> Result<(), String> {
         return Err("endpoint port is required".to_string());
     }
     Ok(())
+}
+
+fn publish_pkarr_pointer(pointer_text: &str) -> Result<(), String> {
+    let keypair = load_pubky_keypair()?;
+    let existing: Option<pkarr::SignedPacket> = tauri::async_runtime::block_on(async {
+        let client = pkarr::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())?;
+        Ok::<Option<pkarr::SignedPacket>, String>(
+            client.resolve_most_recent(&keypair.public_key()).await,
+        )
+    })?;
+    let mut builder = pkarr::SignedPacket::builder();
+    if let Some(existing) = &existing {
+        for record in existing.all_resource_records() {
+            let name = record.name.to_string();
+            if !name.starts_with("_pubkegaard.") {
+                builder = builder.record(record.clone());
+            }
+        }
+    }
+    let signed = builder
+        .txt(
+            "_pubkegaard"
+                .try_into()
+                .map_err(|error| format!("{error}"))?,
+            pointer_text
+                .try_into()
+                .map_err(|error| format!("{error}"))?,
+            300,
+        )
+        .sign(&keypair)
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::block_on(async {
+        pkarr::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())?
+            .publish(&signed, existing.map(|packet| packet.timestamp()))
+            .await
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn resolve_peer_discovery(
+    identity: &pubkegaard_types::PubkyId,
+) -> Result<pubkegaard_types::DiscoveryDocument, String> {
+    let public_key =
+        pkarr::PublicKey::try_from(identity.as_str()).map_err(|error| error.to_string())?;
+    let packet = tauri::async_runtime::block_on(async {
+        pkarr::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())?
+            .resolve_most_recent(&public_key)
+            .await
+            .ok_or_else(|| "no PKARR packet found for peer".to_string())
+    })?;
+    let pointer_text = packet
+        .fresh_resource_records("_pubkegaard")
+        .find_map(|record| match &record.rdata {
+            RData::TXT(txt) => txt
+                .attributes()
+                .get("v")
+                .and(Some(record))
+                .map(|_| txt_to_pointer(txt)),
+            _ => None,
+        })
+        .flatten()
+        .ok_or("peer has no fresh _pubkegaard TXT pointer")?;
+    let pointer = pointer_text
+        .parse::<pubkegaard_discovery::CompactPointer>()
+        .map_err(|error| error.to_string())?;
+    let bytes = reqwest::blocking::get(&pointer.document_uri)
+        .map_err(|error| error.to_string())?
+        .bytes()
+        .map_err(|error| error.to_string())?;
+    pubkegaard_discovery::verify_document_bytes(&pointer, &bytes, identity, now_ms()?, None)
+        .map_err(|error| error.to_string())
+}
+
+fn txt_to_pointer(txt: &simple_dns::rdata::TXT<'_>) -> Option<String> {
+    let attrs = txt.attributes();
+    let version = attrs.get("v")?.as_ref()?;
+    let doc = attrs.get("doc")?.as_ref()?;
+    let hash = attrs.get("h")?.as_ref()?;
+    let sequence = attrs.get("seq")?.as_ref()?;
+    let expiry = attrs.get("exp")?.as_ref()?;
+    Some(format!(
+        "v={version};doc={doc};h={hash};seq={sequence};exp={expiry}"
+    ))
 }
 
 fn state_path() -> Result<PathBuf, io::Error> {
@@ -427,6 +699,31 @@ fn load_secret(account: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())?
         .get_password()
         .map_err(|error| error.to_string())
+}
+
+fn load_pubky_keypair() -> Result<pkarr::Keypair, String> {
+    let secret = STANDARD
+        .decode(load_secret("pubky-root-private-key")?)
+        .map_err(|error| error.to_string())?;
+    let secret: [u8; 32] = secret
+        .try_into()
+        .map_err(|_| "invalid stored Pubky root key".to_string())?;
+    Ok(pkarr::Keypair::from_secret_key(&secret))
+}
+
+fn normalize_homeserver_url(input: &str) -> Result<String, String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if !trimmed.starts_with("https://") {
+        return Err("homeserver URL must start with https://".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn now_ms() -> Result<u64, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis() as u64)
 }
 
 fn overlay_address_for(identity: &str) -> String {
@@ -554,6 +851,9 @@ fn main() {
             complete_onboarding,
             import_peer_profile,
             export_peer_profile,
+            configure_homeserver,
+            publish_discovery,
+            add_peer_by_pubky,
             remove_peer,
             emergency_stop,
             verify_wireguard_tools,

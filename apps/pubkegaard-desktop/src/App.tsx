@@ -9,6 +9,8 @@ type AppState = {
   localAddress: string | null;
   listenPort: number;
   endpointHost: string | null;
+  homeserverUrl: string | null;
+  pkarrPointer: string | null;
   discoveryPublished: boolean;
   wireguardState: 'not_configured' | 'stopped' | 'running';
   sessionMode: 'none' | 'ring_session' | 'local_keys';
@@ -46,6 +48,8 @@ const initialState: AppState = {
   localAddress: null,
   listenPort: 51820,
   endpointHost: null,
+  homeserverUrl: null,
+  pkarrPointer: null,
   discoveryPublished: false,
   wireguardState: 'not_configured',
   sessionMode: 'none',
@@ -57,9 +61,13 @@ export function App() {
   const [appState, setAppState] = useState<AppState>(initialState);
   const [activeView, setActiveView] = useState<'onboarding' | 'dashboard' | 'peers' | 'network' | 'safety' | 'settings'>('onboarding');
   const [peerProfileJson, setPeerProfileJson] = useState('');
+  const [peerPubky, setPeerPubky] = useState('');
   const [exportedProfile, setExportedProfile] = useState('');
   const [endpointHost, setEndpointHost] = useState('');
   const [endpointPort, setEndpointPort] = useState(51820);
+  const [homeserverUrl, setHomeserverUrl] = useState('');
+  const [sessionToken, setSessionToken] = useState('');
+  const [publishedPointer, setPublishedPointer] = useState('');
   const [peerPreset, setPeerPreset] = useState<PeerPreset>('mesh');
   const [error, setError] = useState<string | null>(null);
 
@@ -107,6 +115,21 @@ export function App() {
     }
   }
 
+  async function addPeerByPubky() {
+    if (!peerPubky.trim()) return;
+    setError(null);
+    try {
+      const next = await invoke<AppState>('add_peer_by_pubky', {
+        identity: peerPubky.trim(),
+        preset: peerPreset,
+      });
+      setAppState(next);
+      setPeerPubky('');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function exportPeerProfile() {
     setError(null);
     try {
@@ -115,6 +138,30 @@ export function App() {
         endpointPort,
       });
       setExportedProfile(profile);
+      await loadState();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function configureHomeserver() {
+    setError(null);
+    try {
+      setAppState(await invoke<AppState>('configure_homeserver', {
+        homeserverUrl,
+        sessionToken,
+      }));
+      setSessionToken('');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function publishDiscovery() {
+    setError(null);
+    try {
+      const result = await invoke<{ documentUrl: string; pkarrPointer: string }>('publish_discovery');
+      setPublishedPointer(result.pkarrPointer);
       await loadState();
     } catch (err) {
       setError(String(err));
@@ -184,12 +231,15 @@ export function App() {
             exportedProfile={exportedProfile}
             endpointHost={endpointHost}
             endpointPort={endpointPort}
+            peerPubky={peerPubky}
             onPeerProfileJsonChange={setPeerProfileJson}
+            onPeerPubkyChange={setPeerPubky}
             onPeerPresetChange={setPeerPreset}
             onEndpointHostChange={setEndpointHost}
             onEndpointPortChange={setEndpointPort}
             onExportPeerProfile={exportPeerProfile}
             onImportPeerProfile={importPeerProfile}
+            onAddPeerByPubky={addPeerByPubky}
             onRemovePeer={removePeer}
           />
         )}
@@ -201,7 +251,18 @@ export function App() {
           />
         )}
         {activeView === 'safety' && <SafetyView riskyActive={riskyActive} onEmergencyStop={emergencyStop} />}
-        {activeView === 'settings' && <Settings appState={appState} />}
+        {activeView === 'settings' && (
+          <Settings
+            appState={appState}
+            homeserverUrl={homeserverUrl}
+            sessionToken={sessionToken}
+            publishedPointer={publishedPointer}
+            onHomeserverUrlChange={setHomeserverUrl}
+            onSessionTokenChange={setSessionToken}
+            onConfigureHomeserver={configureHomeserver}
+            onPublishDiscovery={publishDiscovery}
+          />
+        )}
       </section>
     </main>
   );
@@ -240,6 +301,8 @@ function Dashboard({ appState }: { appState: AppState }) {
         <Status label="WireGuard" value={appState.wireguardState} />
         <Status label="Peers" value={String(appState.peers.length)} />
         <Status label="Session" value={appState.sessionMode} />
+        <Status label="Homeserver" value={appState.homeserverUrl ?? 'Not configured'} />
+        <Status label="PKARR pointer" value={appState.pkarrPointer ? 'Published' : 'Not published'} />
       </div>
       {appState.warnings.length > 0 && (
         <div className="warning">
@@ -258,12 +321,15 @@ function Peers(props: {
   exportedProfile: string;
   endpointHost: string;
   endpointPort: number;
+  peerPubky: string;
   onPeerProfileJsonChange: (value: string) => void;
+  onPeerPubkyChange: (value: string) => void;
   onPeerPresetChange: (value: PeerPreset) => void;
   onEndpointHostChange: (value: string) => void;
   onEndpointPortChange: (value: number) => void;
   onExportPeerProfile: () => Promise<void>;
   onImportPeerProfile: () => Promise<void>;
+  onAddPeerByPubky: () => Promise<void>;
   onRemovePeer: (identity: string) => Promise<void>;
 }) {
   return (
@@ -281,7 +347,20 @@ function Peers(props: {
       </div>
 
       <div className="panel">
-        <h3>Add peer profile</h3>
+        <h3>Add peer by Pubky discovery</h3>
+        <p>Paste a Pubky identity. Pubkegaard resolves its `_pubkegaard` PKARR pointer, fetches the discovery document, and imports the advertised WireGuard device.</p>
+        <div className="form-row">
+          <input value={props.peerPubky} placeholder="Pubky identity" onChange={(event) => props.onPeerPubkyChange(event.target.value)} />
+          <select value={props.peerPreset} onChange={(event) => props.onPeerPresetChange(event.target.value as PeerPreset)}>
+            {Object.entries(presetLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <button onClick={props.onAddPeerByPubky}>Resolve and add</button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>Add peer profile manually</h3>
+        <p>Manual profile exchange remains useful when the peer has not published discovery yet.</p>
         <textarea value={props.peerProfileJson} placeholder="Paste the other user's Pubkegaard peer profile JSON" onChange={(event) => props.onPeerProfileJsonChange(event.target.value)} />
         <select value={props.peerPreset} onChange={(event) => props.onPeerPresetChange(event.target.value as PeerPreset)}>
           {Object.entries(presetLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -343,11 +422,32 @@ function SafetyView({ riskyActive, onEmergencyStop }: { riskyActive: boolean; on
   );
 }
 
-function Settings({ appState }: { appState: AppState }) {
+function Settings(props: {
+  appState: AppState;
+  homeserverUrl: string;
+  sessionToken: string;
+  publishedPointer: string;
+  onHomeserverUrlChange: (value: string) => void;
+  onSessionTokenChange: (value: string) => void;
+  onConfigureHomeserver: () => Promise<void>;
+  onPublishDiscovery: () => Promise<void>;
+}) {
   return (
     <section>
       <h2>Settings</h2>
-      <Status label="Key vault" value={appState.sessionMode === 'local_keys' ? 'Local keys enabled' : 'Session limited'} />
+      <div className="panel">
+        <h3>Homeserver publishing</h3>
+        <p>Configure a homeserver session, then publish your discovery document and `_pubkegaard` PKARR pointer.</p>
+        <div className="form-row">
+          <input value={props.homeserverUrl} placeholder="https://homeserver.example" onChange={(event) => props.onHomeserverUrlChange(event.target.value)} />
+          <input value={props.sessionToken} type="password" placeholder="Pubky session token" onChange={(event) => props.onSessionTokenChange(event.target.value)} />
+          <button onClick={props.onConfigureHomeserver}>Save session</button>
+        </div>
+        <button onClick={props.onPublishDiscovery}>Publish discovery + PKARR pointer</button>
+        {(props.publishedPointer || props.appState.pkarrPointer) && <textarea readOnly value={props.publishedPointer || props.appState.pkarrPointer || ''} />}
+      </div>
+      <Status label="Key vault" value={props.appState.sessionMode === 'local_keys' ? 'Local keys enabled' : 'Session limited'} />
+      <Status label="Homeserver" value={props.appState.homeserverUrl ?? 'Not configured'} />
       <Status label="Discovery path" value="/pub/pubkegaard/v1/discovery.json" />
       <Status label="Overlay range" value="100.88.0.0/16" />
       <Status label="Kill switch" value="Required before exit release" />

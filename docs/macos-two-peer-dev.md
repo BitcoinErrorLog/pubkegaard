@@ -1,6 +1,6 @@
 # macOS Two Peer Dev Setup
 
-This is the first working Pubkegaard desktop path. It uses installed WireGuard tooling on macOS and produces a development DMG through Tauri.
+This is the first working Pubkegaard desktop path. It publishes discovery through a Pubky homeserver plus signed `_pubkegaard` PKARR pointer, resolves peers by Pubky identity, uses installed WireGuard tooling on macOS, and produces a development DMG through Tauri.
 
 ## Prerequisites
 
@@ -25,7 +25,35 @@ npm run tauri build -- --bundles dmg
 
 The checked build artifact for this pass is `releases/Pubkegaard_0.1.0_aarch64.dmg`.
 
-## Pair Two Macs
+## Publish Discovery
+
+On both Macs:
+
+1. Open Pubkegaard.
+2. Choose **Create local Pubkegaard keys**.
+3. Open **Settings**.
+4. Enter a homeserver URL and Pubky session token.
+5. Click **Save session**.
+6. Click **Publish discovery + PKARR pointer**.
+7. Give the other user your Pubky identity from the dashboard.
+
+The app writes `/pub/pubkegaard/v1/discovery.json` to the homeserver, signs a `_pubkegaard` PKARR TXT pointer with the local Pubky root key, and stores the rendered pointer in app state.
+
+## Pair Two Macs By Pubky Identity
+
+On each Mac:
+
+1. Open **Peers**.
+2. Paste the other user's Pubky identity into **Add peer by Pubky discovery**.
+3. Choose **Private mesh only**.
+4. Click **Resolve and add**.
+5. Open **Network**.
+6. Click **Apply WireGuard tunnel**.
+7. Approve the macOS administrator prompt.
+
+After both sides apply, each peer should be reachable at the overlay address shown in the dashboard.
+
+## Manual Profile Fallback
 
 On both Macs:
 
@@ -45,7 +73,7 @@ Then on each Mac:
 5. Click **Apply WireGuard tunnel**.
 6. Approve the macOS administrator prompt.
 
-After both sides apply, each peer should be reachable at the overlay address shown in the dashboard.
+Manual JSON exchange remains available if a peer has not published discovery yet.
 
 ## Stop Or Revoke
 
@@ -55,4 +83,4 @@ After both sides apply, each peer should be reachable at the overlay address sho
 
 ## Current Boundary
 
-This path is real WireGuard config and real OS-level application through `wg-quick`. Pubky homeserver publishing and PKARR-bound `pubky-noise` discovery are still separate integration work; this dev flow uses explicit profile exchange so two users can peer now.
+This path is real discovery publishing, real PKARR pointer publishing, real PKARR peer resolution, real WireGuard config, and real OS-level application through `wg-quick`. The current `pubky-noise` control key is carried in the Pubkegaard discovery document; it should move to the upstream `pubky-noise` PKARR binding API once that API lands.

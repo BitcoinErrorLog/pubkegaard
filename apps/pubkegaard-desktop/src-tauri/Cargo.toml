@@ -10,15 +10,20 @@ rust-version.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 ipnet.workspace = true
 keyring.workspace = true
+pkarr.workspace = true
 pubkegaard-auth = { path = "../../../crates/pubkegaard-auth" }
+pubkegaard-discovery = { path = "../../../crates/pubkegaard-discovery" }
 pubkegaard-keys = { path = "../../../crates/pubkegaard-keys" }
 pubkegaard-platform = { path = "../../../crates/pubkegaard-platform" }
 pubkegaard-types = { path = "../../../crates/pubkegaard-types" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
+simple-dns = "0.9.3"
 tauri = { version = "2", features = [] }
 
 [features]
