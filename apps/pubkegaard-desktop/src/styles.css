@@ -33,12 +33,20 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid #29405f;
   border-radius: 12px;
   background: #08111f;
   color: #f5f7fb;
   padding: 0.75rem 1rem;
+}
+
+textarea {
+  box-sizing: border-box;
+  min-height: 150px;
+  resize: vertical;
+  width: 100%;
 }
 
 .app-shell {
@@ -81,6 +89,7 @@ select {
 }
 
 .status-card,
+.panel,
 .peer-card,
 .warning,
 .error {
@@ -96,6 +105,13 @@ select {
   gap: 0.5rem;
 }
 
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 .status-card span,
 .card span,
 .peer-card p {
@@ -107,6 +123,12 @@ select {
   grid-template-columns: 1fr minmax(220px, 300px) auto;
   gap: 0.75rem;
   margin-bottom: 1rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  margin: 1rem 0;
 }
 
 .peer-card {

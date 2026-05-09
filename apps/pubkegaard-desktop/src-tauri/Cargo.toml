@@ -10,9 +10,12 @@ rust-version.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+blake3.workspace = true
+ipnet.workspace = true
 keyring.workspace = true
 pubkegaard-auth = { path = "../../../crates/pubkegaard-auth" }
 pubkegaard-keys = { path = "../../../crates/pubkegaard-keys" }
+pubkegaard-platform = { path = "../../../crates/pubkegaard-platform" }
 pubkegaard-types = { path = "../../../crates/pubkegaard-types" }
 serde.workspace = true
 serde_json.workspace = true

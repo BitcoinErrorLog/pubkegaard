@@ -83,6 +83,15 @@ pub fn generate_wireguard_transport_key() -> GeneratedKeyPair {
     generate_x25519_key(KeyRole::WireGuardTransport)
 }
 
+pub fn generate_pubky_root_identity_key() -> GeneratedKeyPair {
+    let keypair = pkarr::Keypair::random();
+    GeneratedKeyPair {
+        role: KeyRole::PubkyRootIdentity,
+        private_key_base64: STANDARD.encode(keypair.secret_key()),
+        public_key_base64: keypair.public_key().to_string(),
+    }
+}
+
 fn generate_x25519_key(role: KeyRole) -> GeneratedKeyPair {
     let secret = StaticSecret::random();
     let public = PublicKey::from(&secret);
@@ -109,6 +118,13 @@ mod tests {
         let key = generate_wireguard_transport_key();
         assert_eq!(key.role, KeyRole::WireGuardTransport);
         assert!(key.public_wireguard_key().is_ok());
+    }
+
+    #[test]
+    fn generated_pubky_root_identity_is_valid_pubky_id() {
+        let key = generate_pubky_root_identity_key();
+        assert_eq!(key.role, KeyRole::PubkyRootIdentity);
+        assert!(pubkegaard_types::PubkyId::parse(key.public_key_base64).is_ok());
     }
 
     #[test]

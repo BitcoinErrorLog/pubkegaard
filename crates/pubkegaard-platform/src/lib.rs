@@ -151,6 +151,83 @@ impl PlatformNetwork for LinuxNetworkAdapter {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MacosWireGuardToolsAdapter;
+
+impl PlatformNetwork for MacosWireGuardToolsAdapter {
+    fn kind(&self) -> PlatformKind {
+        PlatformKind::Macos
+    }
+
+    fn verify_backend(&self) -> Result<NetworkPlan, PlatformError> {
+        Ok(NetworkPlan {
+            steps: vec![
+                step(
+                    NetworkOperation::VerifyBackend,
+                    "Verify wg is installed",
+                    Some("command -v wg".to_string()),
+                ),
+                step(
+                    NetworkOperation::VerifyBackend,
+                    "Verify wg-quick is installed",
+                    Some("command -v wg-quick".to_string()),
+                ),
+            ],
+            rollback: Vec::new(),
+        })
+    }
+
+    fn start_interface(&self, interface: &str) -> Result<NetworkPlan, PlatformError> {
+        Ok(NetworkPlan {
+            steps: vec![step(
+                NetworkOperation::StartInterface,
+                format!("Start WireGuard config {interface} with administrator privileges"),
+                Some(format!("wg-quick up {interface}")),
+            )],
+            rollback: vec![step(
+                NetworkOperation::StopInterface,
+                format!("Stop WireGuard config {interface}"),
+                Some(format!("wg-quick down {interface}")),
+            )],
+        })
+    }
+
+    fn stop_interface(&self, interface: &str) -> Result<NetworkPlan, PlatformError> {
+        Ok(NetworkPlan {
+            steps: vec![step(
+                NetworkOperation::StopInterface,
+                format!("Stop WireGuard config {interface}"),
+                Some(format!("wg-quick down {interface}")),
+            )],
+            rollback: Vec::new(),
+        })
+    }
+
+    fn revoke_peer(&self, interface: &str, peer: IpNet) -> Result<NetworkPlan, PlatformError> {
+        Ok(NetworkPlan {
+            steps: vec![step(
+                NetworkOperation::RevokePeer,
+                format!("Remove peer route {peer} and restart {interface}"),
+                Some(format!(
+                    "wg-quick down {interface}; wg-quick up {interface}"
+                )),
+            )],
+            rollback: Vec::new(),
+        })
+    }
+
+    fn emergency_stop(&self, interface: &str) -> Result<NetworkPlan, PlatformError> {
+        Ok(NetworkPlan {
+            steps: vec![step(
+                NetworkOperation::EmergencyStop,
+                format!("Stop {interface} and remove Pubkegaard routes"),
+                Some(format!("wg-quick down {interface}")),
+            )],
+            rollback: Vec::new(),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlannedAdapter {
     kind: PlatformKind,
@@ -221,10 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn planned_macos_adapter_is_explicitly_unsupported() {
-        assert_eq!(
-            PlannedAdapter::macos().verify_backend(),
-            Err(PlatformError::Unsupported(PlatformKind::Macos))
-        );
+    fn macos_wireguard_tools_adapter_plans_backend_checks() {
+        let plan = MacosWireGuardToolsAdapter.verify_backend().unwrap();
+        assert_eq!(plan.steps.len(), 2);
     }
 }

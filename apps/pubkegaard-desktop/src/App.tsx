@@ -6,6 +6,9 @@ type AppState = {
   deviceLabel: string;
   noiseControlPublicKey: string | null;
   wireguardPublicKey: string | null;
+  localAddress: string | null;
+  listenPort: number;
+  endpointHost: string | null;
   discoveryPublished: boolean;
   wireguardState: 'not_configured' | 'stopped' | 'running';
   sessionMode: 'none' | 'ring_session' | 'local_keys';
@@ -17,6 +20,10 @@ type Peer = {
   identity: string;
   label: string | null;
   preset: PeerPreset;
+  wireguardPublicKey: string;
+  address: string;
+  endpointHost: string | null;
+  endpointPort: number;
   connectionState: 'resolving' | 'direct' | 'relayed' | 'degraded' | 'stopped';
 };
 
@@ -36,6 +43,9 @@ const initialState: AppState = {
   deviceLabel: 'This device',
   noiseControlPublicKey: null,
   wireguardPublicKey: null,
+  localAddress: null,
+  listenPort: 51820,
+  endpointHost: null,
   discoveryPublished: false,
   wireguardState: 'not_configured',
   sessionMode: 'none',
@@ -46,7 +56,10 @@ const initialState: AppState = {
 export function App() {
   const [appState, setAppState] = useState<AppState>(initialState);
   const [activeView, setActiveView] = useState<'onboarding' | 'dashboard' | 'peers' | 'network' | 'safety' | 'settings'>('onboarding');
-  const [peerIdentity, setPeerIdentity] = useState('');
+  const [peerProfileJson, setPeerProfileJson] = useState('');
+  const [exportedProfile, setExportedProfile] = useState('');
+  const [endpointHost, setEndpointHost] = useState('');
+  const [endpointPort, setEndpointPort] = useState(51820);
   const [peerPreset, setPeerPreset] = useState<PeerPreset>('mesh');
   const [error, setError] = useState<string | null>(null);
 
@@ -79,16 +92,30 @@ export function App() {
     }
   }
 
-  async function addPeer() {
-    if (!peerIdentity.trim()) return;
+  async function importPeerProfile() {
+    if (!peerProfileJson.trim()) return;
     setError(null);
     try {
-      const next = await invoke<AppState>('add_peer', {
-        identity: peerIdentity.trim(),
+      const next = await invoke<AppState>('import_peer_profile', {
+        profileJson: peerProfileJson.trim(),
         preset: peerPreset,
       });
       setAppState(next);
-      setPeerIdentity('');
+      setPeerProfileJson('');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function exportPeerProfile() {
+    setError(null);
+    try {
+      const profile = await invoke<string>('export_peer_profile', {
+        endpointHost: endpointHost.trim() || null,
+        endpointPort,
+      });
+      setExportedProfile(profile);
+      await loadState();
     } catch (err) {
       setError(String(err));
     }
@@ -108,6 +135,25 @@ export function App() {
     try {
       setAppState(await invoke<AppState>('emergency_stop'));
       setActiveView('dashboard');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function applyWireGuard() {
+    setError(null);
+    try {
+      setAppState(await invoke<AppState>('apply_wireguard'));
+      setActiveView('network');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function stopWireGuard() {
+    setError(null);
+    try {
+      setAppState(await invoke<AppState>('stop_wireguard'));
     } catch (err) {
       setError(String(err));
     }
@@ -133,15 +179,27 @@ export function App() {
         {activeView === 'peers' && (
           <Peers
             appState={appState}
-            peerIdentity={peerIdentity}
+            peerProfileJson={peerProfileJson}
             peerPreset={peerPreset}
-            onPeerIdentityChange={setPeerIdentity}
+            exportedProfile={exportedProfile}
+            endpointHost={endpointHost}
+            endpointPort={endpointPort}
+            onPeerProfileJsonChange={setPeerProfileJson}
             onPeerPresetChange={setPeerPreset}
-            onAddPeer={addPeer}
+            onEndpointHostChange={setEndpointHost}
+            onEndpointPortChange={setEndpointPort}
+            onExportPeerProfile={exportPeerProfile}
+            onImportPeerProfile={importPeerProfile}
             onRemovePeer={removePeer}
           />
         )}
-        {activeView === 'network' && <NetworkView peers={appState.peers} wireguardState={appState.wireguardState} />}
+        {activeView === 'network' && (
+          <NetworkView
+            appState={appState}
+            onApplyWireGuard={applyWireGuard}
+            onStopWireGuard={stopWireGuard}
+          />
+        )}
         {activeView === 'safety' && <SafetyView riskyActive={riskyActive} onEmergencyStop={emergencyStop} />}
         {activeView === 'settings' && <Settings appState={appState} />}
       </section>
@@ -175,6 +233,7 @@ function Dashboard({ appState }: { appState: AppState }) {
       <div className="status-grid">
         <Status label="Identity" value={appState.identity ?? 'Binding required'} />
         <Status label="Device" value={appState.deviceLabel} />
+        <Status label="Overlay address" value={appState.localAddress ?? 'Not assigned'} />
         <Status label="Control key" value={appState.noiseControlPublicKey ? 'Generated' : 'Not generated'} />
         <Status label="WireGuard key" value={appState.wireguardPublicKey ? 'Generated' : 'Not generated'} />
         <Status label="Discovery" value={appState.discoveryPublished ? 'Published' : 'Not published'} />
@@ -194,28 +253,48 @@ function Dashboard({ appState }: { appState: AppState }) {
 
 function Peers(props: {
   appState: AppState;
-  peerIdentity: string;
+  peerProfileJson: string;
   peerPreset: PeerPreset;
-  onPeerIdentityChange: (value: string) => void;
+  exportedProfile: string;
+  endpointHost: string;
+  endpointPort: number;
+  onPeerProfileJsonChange: (value: string) => void;
   onPeerPresetChange: (value: PeerPreset) => void;
-  onAddPeer: () => Promise<void>;
+  onEndpointHostChange: (value: string) => void;
+  onEndpointPortChange: (value: number) => void;
+  onExportPeerProfile: () => Promise<void>;
+  onImportPeerProfile: () => Promise<void>;
   onRemovePeer: (identity: string) => Promise<void>;
 }) {
   return (
     <section>
       <h2>Peers</h2>
-      <div className="form-row">
-        <input value={props.peerIdentity} placeholder="Pubky identity" onChange={(event) => props.onPeerIdentityChange(event.target.value)} />
+      <div className="panel">
+        <h3>Your peer profile</h3>
+        <p>Share this JSON with the other Pubkegaard user. Set an endpoint if they should initiate directly to your public/LAN host.</p>
+        <div className="form-row">
+          <input value={props.endpointHost} placeholder="Advertised endpoint host or IP" onChange={(event) => props.onEndpointHostChange(event.target.value)} />
+          <input type="number" value={props.endpointPort} min={1} max={65535} onChange={(event) => props.onEndpointPortChange(Number(event.target.value))} />
+          <button onClick={props.onExportPeerProfile}>Export profile</button>
+        </div>
+        {props.exportedProfile && <textarea readOnly value={props.exportedProfile} />}
+      </div>
+
+      <div className="panel">
+        <h3>Add peer profile</h3>
+        <textarea value={props.peerProfileJson} placeholder="Paste the other user's Pubkegaard peer profile JSON" onChange={(event) => props.onPeerProfileJsonChange(event.target.value)} />
         <select value={props.peerPreset} onChange={(event) => props.onPeerPresetChange(event.target.value as PeerPreset)}>
           {Object.entries(presetLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <button onClick={props.onAddPeer}>Add peer</button>
+        <button onClick={props.onImportPeerProfile}>Import peer</button>
       </div>
+
       {props.appState.peers.map((peer) => (
         <article className="peer-card" key={peer.identity}>
           <div>
             <strong>{peer.label ?? peer.identity}</strong>
             <p>{presetLabels[peer.preset]} · {peer.connectionState}</p>
+            <p>{peer.address} · {peer.endpointHost ? `${peer.endpointHost}:${peer.endpointPort}` : 'no endpoint advertised'}</p>
           </div>
           <button onClick={() => props.onRemovePeer(peer.identity)}>Revoke</button>
         </article>
@@ -224,16 +303,30 @@ function Peers(props: {
   );
 }
 
-function NetworkView({ peers, wireguardState }: { peers: Peer[]; wireguardState: AppState['wireguardState'] }) {
+function NetworkView({
+  appState,
+  onApplyWireGuard,
+  onStopWireGuard,
+}: {
+  appState: AppState;
+  onApplyWireGuard: () => Promise<void>;
+  onStopWireGuard: () => Promise<void>;
+}) {
   return (
     <section>
       <h2>Network</h2>
-      <p>WireGuard state: {wireguardState}</p>
-      {peers.map((peer) => (
+      <p>WireGuard state: {appState.wireguardState}</p>
+      <p>Local address: {appState.localAddress ?? 'not assigned'}</p>
+      <div className="actions">
+        <button onClick={onApplyWireGuard}>Apply WireGuard tunnel</button>
+        <button onClick={onStopWireGuard}>Stop WireGuard</button>
+      </div>
+      {appState.peers.map((peer) => (
         <article className="peer-card" key={peer.identity}>
           <strong>{peer.identity}</strong>
           <p>Connection: {peer.connectionState}</p>
           <p>Grant: {presetLabels[peer.preset]}</p>
+          <p>Allowed IP: {peer.address}</p>
         </article>
       ))}
     </section>

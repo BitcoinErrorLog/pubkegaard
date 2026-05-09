@@ -2852,9 +2852,12 @@ dependencies = [
 name = "pubkegaard-desktop"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ipnet",
  "keyring",
  "pubkegaard-auth",
  "pubkegaard-keys",
+ "pubkegaard-platform",
  "pubkegaard-types",
  "serde",
  "serde_json",
@@ -2901,6 +2904,7 @@ name = "pubkegaard-keys"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "pkarr",
  "pubkegaard-types",
  "serde",
  "thiserror 2.0.18",
