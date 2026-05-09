@@ -753,6 +753,13 @@ fn ensure_ready_for_wireguard(state: &AppState) -> Result<(), String> {
 
 fn render_wireguard_config(state: &AppState) -> Result<String, String> {
     let private_key = load_secret("wireguard-private-key")?;
+    render_wireguard_config_with_private_key(state, &private_key)
+}
+
+fn render_wireguard_config_with_private_key(
+    state: &AppState,
+    private_key: &str,
+) -> Result<String, String> {
     let address = state
         .local_address
         .as_ref()
@@ -842,6 +849,113 @@ fn run_admin_shell(script: &str) -> Result<(), String> {
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state() -> AppState {
+        AppState {
+            identity: Some("8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo".to_string()),
+            device_label: "test-mac".to_string(),
+            noise_control_public_key: Some(
+                "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=".to_string(),
+            ),
+            wireguard_public_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            local_address: Some("100.88.1.10/32".to_string()),
+            listen_port: 51820,
+            endpoint_host: Some("198.51.100.7".to_string()),
+            homeserver_url: Some("https://homeserver.example".to_string()),
+            pkarr_pointer: None,
+            discovery_published: false,
+            wireguard_state: WireGuardState::Stopped,
+            session_mode: SessionMode::LocalKeys,
+            peers: vec![Peer {
+                identity: "8ys9xm3n8s5kr41iiqt91jpan1sphgj9jf88ks9nujmbfkcpq6mo".to_string(),
+                label: Some("peer-mac".to_string()),
+                preset: PeerPreset::Mesh,
+                wireguard_public_key: "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=".to_string(),
+                address: "100.88.2.20/32".to_string(),
+                endpoint_host: Some("203.0.113.20".to_string()),
+                endpoint_port: 51820,
+                connection_state: ConnectionState::Stopped,
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn discovery_document_contains_control_and_wireguard_keys() {
+        let document = discovery_document_from_state(&test_state()).unwrap();
+        let device = &document.devices[0];
+        assert_eq!(
+            document.identity.as_str(),
+            "8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo"
+        );
+        assert_eq!(device.device_id, "test-mac");
+        assert_eq!(
+            device.noise_control_key.as_base64(),
+            "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="
+        );
+        assert_eq!(
+            device.wg_public_key.as_base64(),
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        );
+        assert_eq!(device.endpoints[0].host, "198.51.100.7");
+    }
+
+    #[test]
+    fn wireguard_config_renders_imported_peer() {
+        let config =
+            render_wireguard_config_with_private_key(&test_state(), "private-key").unwrap();
+        assert!(config.contains("PrivateKey = private-key"));
+        assert!(config.contains("Address = 100.88.1.10/32"));
+        assert!(config.contains("AllowedIPs = 100.88.2.20/32"));
+        assert!(config.contains("Endpoint = 203.0.113.20:51820"));
+    }
+
+    #[test]
+    fn peer_profile_validation_rejects_bad_pubky_identity() {
+        let profile = PeerProfile {
+            version: 1,
+            identity: "not-a-pubky".to_string(),
+            device_label: "peer".to_string(),
+            noise_control_public_key: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=".to_string(),
+            wireguard_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string(),
+            address: "100.88.2.20/32".to_string(),
+            endpoint_host: None,
+            endpoint_port: 51820,
+        };
+        assert!(validate_peer_profile(&profile).is_err());
+    }
+
+    #[test]
+    fn txt_pointer_round_trip_parses_pkarr_payload() {
+        let txt = simple_dns::rdata::TXT::new()
+            .with_string("v=pkg1")
+            .unwrap()
+            .with_string("doc=https://homeserver.example/pub/pubkegaard/v1/discovery.json")
+            .unwrap()
+            .with_string("h=b3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap()
+            .with_string("seq=7")
+            .unwrap()
+            .with_string("exp=99")
+            .unwrap();
+        assert_eq!(
+            txt_to_pointer(&txt).unwrap(),
+            "v=pkg1;doc=https://homeserver.example/pub/pubkegaard/v1/discovery.json;h=b3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;seq=7;exp=99"
+        );
+    }
+
+    #[test]
+    fn shell_quote_handles_single_quotes() {
+        assert_eq!(
+            shell_quote(Path::new("/tmp/pubke'gaard.conf")),
+            "'/tmp/pubke'\\''gaard.conf'"
+        );
+    }
 }
 
 fn main() {

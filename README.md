@@ -49,6 +49,12 @@ The checked build artifact from the current pass is:
 releases/Pubkegaard_0.1.0_aarch64.dmg
 ```
 
+Run the local preflight before handing the DMG to a peer:
+
+```sh
+./scripts/macos-two-peer-preflight.sh
+```
+
 Discovery setup:
 
 1. Both users open Pubkegaard and choose **Create local Pubkegaard keys**.

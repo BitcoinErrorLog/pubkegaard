@@ -25,6 +25,12 @@ npm run tauri build -- --bundles dmg
 
 The checked build artifact for this pass is `releases/Pubkegaard_0.1.0_aarch64.dmg`.
 
+Before sharing the DMG, run:
+
+```sh
+./scripts/macos-two-peer-preflight.sh
+```
+
 ## Publish Discovery
 
 On both Macs:
