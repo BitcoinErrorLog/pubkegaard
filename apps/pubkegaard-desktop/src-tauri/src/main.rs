@@ -1,13 +1,21 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, BufRead, BufReader, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use simple_dns::rdata::RData;
+
+const BORINGTUN_INTERFACE: &str = "utun88";
+const BORINGTUN_SOCKET: &str = "/var/run/wireguard/utun88.sock";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +81,10 @@ struct AppState {
     pkarr_pointer: Option<String>,
     discovery_published: bool,
     wireguard_state: WireGuardState,
+    #[serde(default)]
+    wireguard_backend_pid: Option<u32>,
+    #[serde(default)]
+    wireguard_interface: Option<String>,
     session_mode: SessionMode,
     peers: Vec<Peer>,
     warnings: Vec<String>,
@@ -102,8 +114,7 @@ struct PeerProfile {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolStatus {
-    wg: bool,
-    wg_quick: bool,
+    bundled_backend: bool,
     details: String,
 }
 
@@ -128,6 +139,8 @@ impl Default for AppState {
             pkarr_pointer: None,
             discovery_published: false,
             wireguard_state: WireGuardState::NotConfigured,
+            wireguard_backend_pid: None,
+            wireguard_interface: None,
             session_mode: SessionMode::None,
             peers: Vec::new(),
             warnings: vec!["Onboarding has not completed.".to_string()],
@@ -358,7 +371,26 @@ fn add_peer_by_pubky(identity: String, preset: PeerPreset) -> Result<AppState, S
 #[tauri::command]
 fn remove_peer(identity: String) -> Result<AppState, String> {
     let mut state = read_state().map_err(|error| error.to_string())?;
+    let removed_routes = state
+        .peers
+        .iter()
+        .filter(|peer| peer.identity == identity)
+        .map(|peer| peer.address.clone())
+        .collect::<Vec<_>>();
     state.peers.retain(|peer| peer.identity != identity);
+    if state.wireguard_state == WireGuardState::Running {
+        for route in removed_routes {
+            let _ = remove_peer_route(&route);
+        }
+        if state.peers.is_empty() {
+            let _ = stop_bundled_wireguard_backend();
+            state.wireguard_state = WireGuardState::Stopped;
+            state.wireguard_backend_pid = None;
+            state.wireguard_interface = None;
+        } else {
+            configure_bundled_wireguard(&state)?;
+        }
+    }
     state.warnings = warnings_for(&state);
     write_state(&state).map_err(|error| error.to_string())?;
     Ok(state)
@@ -366,10 +398,13 @@ fn remove_peer(identity: String) -> Result<AppState, String> {
 
 #[tauri::command]
 fn emergency_stop() -> Result<AppState, String> {
-    let _ = run_wg_quick_down();
+    let _ = stop_bundled_wireguard_backend();
     let mut state = read_state().map_err(|error| error.to_string())?;
     state.wireguard_state = WireGuardState::Stopped;
+    state.wireguard_backend_pid = None;
+    state.wireguard_interface = None;
     for peer in &mut state.peers {
+        let _ = remove_peer_route(&peer.address);
         if matches!(
             peer.preset,
             PeerPreset::RelayServer
@@ -390,17 +425,14 @@ fn emergency_stop() -> Result<AppState, String> {
 
 #[tauri::command]
 fn verify_wireguard_tools() -> ToolStatus {
-    let wg = command_exists("wg");
-    let wg_quick = command_exists("wg-quick");
-    let details = match (wg, wg_quick) {
-        (true, true) => "WireGuard tools are installed.".to_string(),
-        (false, false) => "Install WireGuard tools first: brew install wireguard-tools".to_string(),
-        (false, true) => "Missing wg. Install or repair wireguard-tools.".to_string(),
-        (true, false) => "Missing wg-quick. Install or repair wireguard-tools.".to_string(),
+    let bundled_backend = bundled_wireguard_backend_path().is_ok();
+    let details = if bundled_backend {
+        "Bundled WireGuard backend is available.".to_string()
+    } else {
+        "Bundled WireGuard backend is missing from the app bundle.".to_string()
     };
     ToolStatus {
-        wg,
-        wg_quick,
+        bundled_backend,
         details,
     }
 }
@@ -409,11 +441,14 @@ fn verify_wireguard_tools() -> ToolStatus {
 fn apply_wireguard() -> Result<AppState, String> {
     let mut state = read_state().map_err(|error| error.to_string())?;
     ensure_ready_for_wireguard(&state)?;
-    let config = render_wireguard_config(&state)?;
-    let path = wireguard_config_path().map_err(|error| error.to_string())?;
-    fs::write(&path, config).map_err(|error| error.to_string())?;
-    run_wg_quick_up(&path)?;
+    stop_bundled_wireguard_backend()?;
+    start_bundled_wireguard_backend()?;
+    configure_bundled_wireguard(&state)?;
+    configure_interface_address(&state)?;
+    configure_peer_routes(&state)?;
     state.wireguard_state = WireGuardState::Running;
+    state.wireguard_backend_pid = boringtun_pid();
+    state.wireguard_interface = Some(BORINGTUN_INTERFACE.to_string());
     for peer in &mut state.peers {
         peer.connection_state = ConnectionState::Direct;
     }
@@ -424,9 +459,14 @@ fn apply_wireguard() -> Result<AppState, String> {
 
 #[tauri::command]
 fn stop_wireguard() -> Result<AppState, String> {
-    run_wg_quick_down()?;
     let mut state = read_state().map_err(|error| error.to_string())?;
+    for peer in &state.peers {
+        let _ = remove_peer_route(&peer.address);
+    }
+    stop_bundled_wireguard_backend()?;
     state.wireguard_state = WireGuardState::Stopped;
+    state.wireguard_backend_pid = None;
+    state.wireguard_interface = None;
     for peer in &mut state.peers {
         peer.connection_state = ConnectionState::Stopped;
     }
@@ -482,10 +522,8 @@ fn warnings_for(state: &AppState) -> Vec<String> {
     if !state.discovery_published {
         warnings.push("Discovery has not been published to homeserver/PKARR yet.".to_string());
     }
-    if !verify_wireguard_tools().wg_quick {
-        warnings.push(
-            "WireGuard tools are not installed. Run: brew install wireguard-tools".to_string(),
-        );
+    if !verify_wireguard_tools().bundled_backend {
+        warnings.push("Bundled WireGuard backend is missing from the app bundle.".to_string());
     }
     if state.peers.iter().any(|peer| {
         matches!(
@@ -739,7 +777,7 @@ fn overlay_address_for(identity: &str) -> String {
 
 fn ensure_ready_for_wireguard(state: &AppState) -> Result<(), String> {
     let tools = verify_wireguard_tools();
-    if !tools.wg || !tools.wg_quick {
+    if !tools.bundled_backend {
         return Err(tools.details);
     }
     if state.local_address.is_none() {
@@ -751,67 +789,242 @@ fn ensure_ready_for_wireguard(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn render_wireguard_config(state: &AppState) -> Result<String, String> {
-    let private_key = load_secret("wireguard-private-key")?;
-    render_wireguard_config_with_private_key(state, &private_key)
-}
-
-fn render_wireguard_config_with_private_key(
-    state: &AppState,
-    private_key: &str,
-) -> Result<String, String> {
-    let address = state
-        .local_address
-        .as_ref()
-        .ok_or("missing local overlay address")?;
-    let mut config = format!(
-        "[Interface]\nPrivateKey = {private_key}\nAddress = {address}\nListenPort = {}\n",
-        state.listen_port
-    );
-    for peer in &state.peers {
-        config.push_str("\n[Peer]\n");
-        config.push_str(&format!("PublicKey = {}\n", peer.wireguard_public_key));
-        config.push_str(&format!("AllowedIPs = {}\n", peer.address));
-        if let Some(host) = &peer.endpoint_host {
-            config.push_str(&format!("Endpoint = {}:{}\n", host, peer.endpoint_port));
+fn bundled_wireguard_backend_path() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("PUBKEGAARD_BORINGTUN_PATH").map(PathBuf::from) {
+        if path.exists() {
+            return Ok(path);
         }
-        config.push_str("PersistentKeepalive = 25\n");
     }
-    Ok(config)
+
+    let binary_name = bundled_wireguard_binary_name();
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("boringtun-cli"))),
+        std::env::current_exe().ok().and_then(|path| {
+            path.parent()
+                .and_then(|macos| macos.parent())
+                .map(|contents| {
+                    contents
+                        .join("Resources")
+                        .join("boringtun-cli-aarch64-apple-darwin")
+                })
+        }),
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join("boringtun-cli-aarch64-apple-darwin"),
+        ),
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(binary_name),
+        ),
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.exists())
+        .ok_or_else(|| "bundled WireGuard backend not found".to_string())
 }
 
-fn wireguard_config_path() -> Result<PathBuf, io::Error> {
-    let dir = state_path()?
+fn bundled_wireguard_binary_name() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "boringtun-cli-aarch64-apple-darwin"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "boringtun-cli-x86_64-apple-darwin"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "boringtun-cli"
+    }
+}
+
+fn start_bundled_wireguard_backend() -> Result<(), String> {
+    let backend = bundled_wireguard_backend_path()?;
+    let log = state_path()
+        .map_err(|error| error.to_string())?
         .parent()
-        .ok_or_else(|| io::Error::other("invalid state path"))?
-        .to_path_buf();
-    Ok(dir.join("pubkegaard.conf"))
+        .ok_or_else(|| "invalid state path".to_string())?
+        .join("boringtun.log");
+    let user = std::env::var("USER").unwrap_or_else(|_| "nobody".to_string());
+    let script = format!(
+        "mkdir -p /var/run/wireguard; rm -f {socket}; USER={user} {backend} --log {log} {interface}; for i in 1 2 3 4 5 6 7 8 9 10; do if [ -S {socket} ]; then chmod 666 {socket}; exit 0; fi; sleep 0.1; done; exit 1",
+        socket = BORINGTUN_SOCKET,
+        user = shell_quote_text(&user),
+        backend = shell_quote(&backend),
+        log = shell_quote(&log),
+        interface = BORINGTUN_INTERFACE
+    );
+    run_admin_shell(&script)?;
+    wait_for_uapi_socket()
 }
 
-fn run_wg_quick_up(path: &Path) -> Result<(), String> {
+fn stop_bundled_wireguard_backend() -> Result<(), String> {
     run_admin_shell(&format!(
-        "wg-quick down {} >/dev/null 2>&1 || true; wg-quick up {}",
-        shell_quote(path),
-        shell_quote(path)
+        "pkill -f {} >/dev/null 2>&1 || true; rm -f {}",
+        shell_quote_text(&format!("boringtun-cli.*{BORINGTUN_INTERFACE}")),
+        BORINGTUN_SOCKET
     ))
 }
 
-fn run_wg_quick_down() -> Result<(), String> {
-    match wireguard_config_path() {
-        Ok(path) if path.exists() => run_admin_shell(&format!(
-            "wg-quick down {} >/dev/null 2>&1 || true",
-            shell_quote(&path)
-        )),
-        _ => Ok(()),
+fn configure_bundled_wireguard(state: &AppState) -> Result<(), String> {
+    let private_key = load_secret("wireguard-private-key")?;
+    let command = render_wireguard_uapi_set(state, &private_key)?;
+    send_wireguard_uapi(&command)
+}
+
+fn wait_for_uapi_socket() -> Result<(), String> {
+    let socket = Path::new(BORINGTUN_SOCKET);
+    for _ in 0..50 {
+        if socket.exists() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("bundled WireGuard backend did not expose its UAPI socket".to_string())
+}
+
+fn send_wireguard_uapi(command: &str) -> Result<(), String> {
+    let mut stream = UnixStream::connect(BORINGTUN_SOCKET).map_err(|error| error.to_string())?;
+    stream
+        .write_all(command.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    while reader
+        .read_line(&mut line)
+        .map_err(|error| error.to_string())?
+        > 0
+    {
+        if let Some(errno) = line.strip_prefix("errno=") {
+            let errno = errno.trim();
+            if errno == "0" {
+                return Ok(());
+            }
+            return Err(format!(
+                "bundled WireGuard backend rejected config with errno {errno}"
+            ));
+        }
+        line.clear();
+    }
+    Err("bundled WireGuard backend did not return UAPI status".to_string())
+}
+
+fn render_wireguard_uapi_set(state: &AppState, private_key_base64: &str) -> Result<String, String> {
+    let mut command = format!(
+        "set=1\nprivate_key={}\nlisten_port={}\nreplace_peers=true\n",
+        base64_key_to_hex(private_key_base64)?,
+        state.listen_port
+    );
+    for peer in &state.peers {
+        command.push_str(&format!(
+            "public_key={}\n",
+            base64_key_to_hex(&peer.wireguard_public_key)?
+        ));
+        command.push_str("replace_allowed_ips=true\n");
+        command.push_str(&format!("allowed_ip={}\n", peer.address));
+        if let Some(endpoint) = peer_endpoint(peer)? {
+            command.push_str(&format!("endpoint={endpoint}\n"));
+        }
+        command.push_str("persistent_keepalive_interval=25\n");
+    }
+    command.push('\n');
+    Ok(command)
+}
+
+fn base64_key_to_hex(key: &str) -> Result<String, String> {
+    let bytes = STANDARD.decode(key).map_err(|error| error.to_string())?;
+    if bytes.len() != 32 {
+        return Err("WireGuard keys must be 32 bytes".to_string());
+    }
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn peer_endpoint(peer: &Peer) -> Result<Option<SocketAddr>, String> {
+    let Some(host) = &peer.endpoint_host else {
+        return Ok(None);
+    };
+    (host.as_str(), peer.endpoint_port)
+        .to_socket_addrs()
+        .map_err(|error| format!("failed to resolve peer endpoint {host}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("peer endpoint {host} resolved to no addresses"))
+        .map(Some)
+}
+
+fn configure_interface_address(state: &AppState) -> Result<(), String> {
+    let address = state
+        .local_address
+        .as_ref()
+        .ok_or_else(|| "missing local overlay address".to_string())?
+        .parse::<ipnet::IpNet>()
+        .map_err(|error| error.to_string())?;
+    let ip = match address.addr() {
+        IpAddr::V4(ip) => ip,
+        IpAddr::V6(_) => {
+            return Err(
+                "macOS bundled backend currently supports IPv4 overlay addresses".to_string(),
+            )
+        }
+    };
+    run_admin_shell(&format!(
+        "ifconfig {interface} inet {ip} {ip} netmask 255.255.255.255 mtu 1420 up",
+        interface = BORINGTUN_INTERFACE
+    ))
+}
+
+fn configure_peer_routes(state: &AppState) -> Result<(), String> {
+    for peer in &state.peers {
+        add_peer_route(&peer.address)?;
+    }
+    Ok(())
+}
+
+fn add_peer_route(address: &str) -> Result<(), String> {
+    let ip = route_ip(address)?;
+    run_admin_shell(&format!(
+        "route -n delete -host {ip} >/dev/null 2>&1 || true; route -n add -host {ip} -interface {interface}",
+        interface = BORINGTUN_INTERFACE
+    ))
+}
+
+fn remove_peer_route(address: &str) -> Result<(), String> {
+    let ip = route_ip(address)?;
+    run_admin_shell(&format!(
+        "route -n delete -host {ip} >/dev/null 2>&1 || true"
+    ))
+}
+
+fn route_ip(address: &str) -> Result<Ipv4Addr, String> {
+    match address
+        .parse::<ipnet::IpNet>()
+        .map_err(|error| error.to_string())?
+        .addr()
+    {
+        IpAddr::V4(ip) => Ok(ip),
+        IpAddr::V6(_) => {
+            Err("macOS bundled backend currently supports IPv4 peer routes".to_string())
+        }
     }
 }
 
-fn command_exists(command: &str) -> bool {
-    Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .is_ok_and(|status| status.success())
+fn boringtun_pid() -> Option<u32> {
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg(format!("boringtun-cli.*{BORINGTUN_INTERFACE}"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.trim().parse::<u32>().ok())
 }
 
 fn run_admin_shell(script: &str) -> Result<(), String> {
@@ -848,6 +1061,10 @@ fn run_admin_shell(script: &str) -> Result<(), String> {
 
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
+    shell_quote_text(&value)
+}
+
+fn shell_quote_text(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -870,6 +1087,8 @@ mod tests {
             pkarr_pointer: None,
             discovery_published: false,
             wireguard_state: WireGuardState::Stopped,
+            wireguard_backend_pid: None,
+            wireguard_interface: None,
             session_mode: SessionMode::LocalKeys,
             peers: vec![Peer {
                 identity: "8ys9xm3n8s5kr41iiqt91jpan1sphgj9jf88ks9nujmbfkcpq6mo".to_string(),
@@ -906,13 +1125,23 @@ mod tests {
     }
 
     #[test]
-    fn wireguard_config_renders_imported_peer() {
-        let config =
-            render_wireguard_config_with_private_key(&test_state(), "private-key").unwrap();
-        assert!(config.contains("PrivateKey = private-key"));
-        assert!(config.contains("Address = 100.88.1.10/32"));
-        assert!(config.contains("AllowedIPs = 100.88.2.20/32"));
-        assert!(config.contains("Endpoint = 203.0.113.20:51820"));
+    fn wireguard_uapi_set_renders_bundled_backend_config() {
+        let config = render_wireguard_uapi_set(
+            &test_state(),
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        )
+        .unwrap();
+        assert!(config.starts_with("set=1\n"));
+        assert!(config.contains(
+            "private_key=0101010101010101010101010101010101010101010101010101010101010101"
+        ));
+        assert!(config.contains("listen_port=51820"));
+        assert!(config.contains("replace_peers=true"));
+        assert!(config.contains(
+            "public_key=0808080808080808080808080808080808080808080808080808080808080808"
+        ));
+        assert!(config.contains("allowed_ip=100.88.2.20/32"));
+        assert!(config.ends_with('\n'));
     }
 
     #[test]
@@ -955,6 +1184,22 @@ mod tests {
             shell_quote(Path::new("/tmp/pubke'gaard.conf")),
             "'/tmp/pubke'\\''gaard.conf'"
         );
+    }
+
+    #[test]
+    fn route_ip_rejects_ipv6_routes_for_macos_backend() {
+        assert!(route_ip("fd00::1/128").is_err());
+    }
+
+    #[test]
+    fn user_docs_do_not_require_external_wireguard_tools_on_macos() {
+        let readme = include_str!("../../../../README.md");
+        let macos_doc = include_str!("../../../../docs/macos-two-peer-dev.md");
+        let preflight = include_str!("../../../../scripts/macos-two-peer-preflight.sh");
+        for text in [readme, macos_doc, preflight] {
+            assert!(!text.contains("brew install wireguard-tools"));
+            assert!(!text.contains("wg-quick"));
+        }
     }
 }
 

@@ -5,7 +5,7 @@
   "identifier": "org.bitcoinerrorlog.pubkegaard",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:bundle",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -26,6 +26,8 @@
   "bundle": {
     "active": true,
     "icon": [],
+    "externalBin": ["binaries/boringtun-cli"],
+    "resources": ["binaries/boringtun-cli-aarch64-apple-darwin"],
     "targets": ["dmg", "msi", "deb", "rpm", "appimage"],
     "publisher": "BitcoinErrorLog"
   }

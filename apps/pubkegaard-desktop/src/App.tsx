@@ -13,6 +13,8 @@ type AppState = {
   pkarrPointer: string | null;
   discoveryPublished: boolean;
   wireguardState: 'not_configured' | 'stopped' | 'running';
+  wireguardBackendPid: number | null;
+  wireguardInterface: string | null;
   sessionMode: 'none' | 'ring_session' | 'local_keys';
   peers: Peer[];
   warnings: string[];
@@ -52,6 +54,8 @@ const initialState: AppState = {
   pkarrPointer: null,
   discoveryPublished: false,
   wireguardState: 'not_configured',
+  wireguardBackendPid: null,
+  wireguardInterface: null,
   sessionMode: 'none',
   peers: [],
   warnings: ['Onboarding has not completed.'],
@@ -299,6 +303,7 @@ function Dashboard({ appState }: { appState: AppState }) {
         <Status label="WireGuard key" value={appState.wireguardPublicKey ? 'Generated' : 'Not generated'} />
         <Status label="Discovery" value={appState.discoveryPublished ? 'Published' : 'Not published'} />
         <Status label="WireGuard" value={appState.wireguardState} />
+        <Status label="WireGuard backend" value={appState.wireguardInterface ? `${appState.wireguardInterface}${appState.wireguardBackendPid ? ` · pid ${appState.wireguardBackendPid}` : ''}` : 'Bundled'} />
         <Status label="Peers" value={String(appState.peers.length)} />
         <Status label="Session" value={appState.sessionMode} />
         <Status label="Homeserver" value={appState.homeserverUrl ?? 'Not configured'} />
@@ -395,6 +400,7 @@ function NetworkView({
     <section>
       <h2>Network</h2>
       <p>WireGuard state: {appState.wireguardState}</p>
+      <p>Backend: bundled userspace WireGuard{appState.wireguardInterface ? ` on ${appState.wireguardInterface}` : ''}</p>
       <p>Local address: {appState.localAddress ?? 'not assigned'}</p>
       <div className="actions">
         <button onClick={onApplyWireGuard}>Apply WireGuard tunnel</button>

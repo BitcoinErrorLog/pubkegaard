@@ -1,16 +1,10 @@
 # macOS Two Peer Dev Setup
 
-This is the first working Pubkegaard desktop path. It publishes discovery through a Pubky homeserver plus signed `_pubkegaard` PKARR pointer, resolves peers by Pubky identity, uses installed WireGuard tooling on macOS, and produces a development DMG through Tauri.
+This is the first working Pubkegaard desktop path. It publishes discovery through a Pubky homeserver plus signed `_pubkegaard` PKARR pointer, resolves peers by Pubky identity, uses the bundled userspace WireGuard backend on macOS, and produces a development DMG through Tauri.
 
 ## Prerequisites
 
-Each Mac needs:
-
-```sh
-brew install wireguard-tools
-```
-
-The app uses `wg-quick` through a macOS administrator prompt when applying or stopping the tunnel.
+The DMG bundles the userspace WireGuard backend. Each Mac only needs administrator approval when Pubkegaard creates the `utun` interface and host routes.
 
 ## Build The DMG
 
@@ -83,10 +77,10 @@ Manual JSON exchange remains available if a peer has not published discovery yet
 
 ## Stop Or Revoke
 
-- **Stop WireGuard** runs `wg-quick down` for the Pubkegaard config.
-- **Revoke** removes the peer from local state; apply the tunnel again to rewrite WireGuard without that peer.
-- **Emergency stop** stops WireGuard and marks risky peer modes stopped.
+- **Stop WireGuard** removes Pubkegaard host routes and stops the bundled WireGuard backend.
+- **Revoke** removes the peer from local state and removes that peer route if the tunnel is running.
+- **Emergency stop** removes Pubkegaard host routes, stops the bundled backend, and marks risky peer modes stopped.
 
 ## Current Boundary
 
-This path is real discovery publishing, real PKARR pointer publishing, real PKARR peer resolution, real WireGuard config, and real OS-level application through `wg-quick`. The current `pubky-noise` control key is carried in the Pubkegaard discovery document; it should move to the upstream `pubky-noise` PKARR binding API once that API lands.
+This path is real discovery publishing, real PKARR pointer publishing, real PKARR peer resolution, real WireGuard UAPI config, and real OS-level application through the bundled userspace backend. The current `pubky-noise` control key is carried in the Pubkegaard discovery document; it should move to the upstream `pubky-noise` PKARR binding API once that API lands.

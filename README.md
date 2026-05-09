@@ -2,7 +2,7 @@
 
 Pubkegaard is a Pubky-native desktop app and control plane for trusted-peer WireGuard networks.
 
-The current working path is macOS-first: two users can install the development DMG, create local Pubkegaard keys, publish discovery to a homeserver, advertise the discovery document through a signed `_pubkegaard` PKARR TXT pointer, resolve each other by Pubky identity, and apply a WireGuard tunnel through installed `wg-quick` tooling. Manual peer profile exchange is still available as a fallback.
+The current working path is macOS-first: two users can install the development DMG, create local Pubkegaard keys, publish discovery to a homeserver, advertise the discovery document through a signed `_pubkegaard` PKARR TXT pointer, resolve each other by Pubky identity, and apply a WireGuard tunnel through the bundled userspace WireGuard backend. Manual peer profile exchange is still available as a fallback.
 
 The product launch path remains staged:
 
@@ -28,11 +28,7 @@ WireGuard is the v1 packet transport. Pubky identifies peers, PKARR discovers cu
 
 ## macOS Development App
 
-Prerequisite on each Mac:
-
-```sh
-brew install wireguard-tools
-```
+The macOS DMG bundles the WireGuard userspace backend needed for mesh mode. Users do not need Homebrew or external WireGuard command-line tools.
 
 Build the development DMG:
 
@@ -68,13 +64,13 @@ Two-peer tunnel setup:
 2. Each user pastes the other Pubky identity into **Add peer by Pubky discovery**.
 3. Each user clicks **Resolve and add**.
 4. Each user opens **Network** and clicks **Apply WireGuard tunnel**.
-5. macOS prompts for administrator approval because the app calls `wg-quick`.
+5. macOS prompts for administrator approval because creating the `utun` interface and host routes requires elevated network permissions.
 
 See `docs/macos-two-peer-dev.md` for the full setup and stop/revoke flow.
 
 ## Current Boundaries
 
-- The macOS app applies real WireGuard config through `wg-quick`; it is not yet notarized or production-signed.
+- The macOS app applies real WireGuard config through a bundled BoringTun userspace backend; it is not yet notarized or production-signed.
 - Pubky root identity keys, `pubky-noise` control keys, and WireGuard keys are generated locally.
 - Discovery publishing requires a valid Pubky homeserver URL and session token.
 - `_pubkegaard` PKARR pointers are signed by the app-owned Pubky root identity key.

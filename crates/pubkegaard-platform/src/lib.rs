@@ -152,9 +152,9 @@ impl PlatformNetwork for LinuxNetworkAdapter {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct MacosWireGuardToolsAdapter;
+pub struct MacosBundledWireGuardAdapter;
 
-impl PlatformNetwork for MacosWireGuardToolsAdapter {
+impl PlatformNetwork for MacosBundledWireGuardAdapter {
     fn kind(&self) -> PlatformKind {
         PlatformKind::Macos
     }
@@ -164,13 +164,15 @@ impl PlatformNetwork for MacosWireGuardToolsAdapter {
             steps: vec![
                 step(
                     NetworkOperation::VerifyBackend,
-                    "Verify wg is installed",
-                    Some("command -v wg".to_string()),
+                    "Verify bundled BoringTun backend is present",
+                    Some(
+                        "test -x Contents/Resources/boringtun-cli-aarch64-apple-darwin".to_string(),
+                    ),
                 ),
                 step(
                     NetworkOperation::VerifyBackend,
-                    "Verify wg-quick is installed",
-                    Some("command -v wg-quick".to_string()),
+                    "Verify WireGuard UAPI socket can be configured",
+                    Some("connect /var/run/wireguard/utun88.sock".to_string()),
                 ),
             ],
             rollback: Vec::new(),
@@ -181,13 +183,13 @@ impl PlatformNetwork for MacosWireGuardToolsAdapter {
         Ok(NetworkPlan {
             steps: vec![step(
                 NetworkOperation::StartInterface,
-                format!("Start WireGuard config {interface} with administrator privileges"),
-                Some(format!("wg-quick up {interface}")),
+                format!("Start bundled userspace WireGuard backend for {interface}"),
+                Some(format!("boringtun-cli {interface}")),
             )],
             rollback: vec![step(
                 NetworkOperation::StopInterface,
-                format!("Stop WireGuard config {interface}"),
-                Some(format!("wg-quick down {interface}")),
+                format!("Stop bundled userspace WireGuard backend for {interface}"),
+                Some(format!("pkill -f boringtun-cli.*{interface}")),
             )],
         })
     }
@@ -196,8 +198,8 @@ impl PlatformNetwork for MacosWireGuardToolsAdapter {
         Ok(NetworkPlan {
             steps: vec![step(
                 NetworkOperation::StopInterface,
-                format!("Stop WireGuard config {interface}"),
-                Some(format!("wg-quick down {interface}")),
+                format!("Stop bundled userspace WireGuard backend for {interface}"),
+                Some(format!("pkill -f boringtun-cli.*{interface}")),
             )],
             rollback: Vec::new(),
         })
@@ -207,9 +209,10 @@ impl PlatformNetwork for MacosWireGuardToolsAdapter {
         Ok(NetworkPlan {
             steps: vec![step(
                 NetworkOperation::RevokePeer,
-                format!("Remove peer route {peer} and restart {interface}"),
+                format!("Remove peer route {peer} from {interface}"),
                 Some(format!(
-                    "wg-quick down {interface}; wg-quick up {interface}"
+                    "route -n delete -host {} >/dev/null 2>&1 || true",
+                    peer.addr()
                 )),
             )],
             rollback: Vec::new(),
@@ -220,8 +223,8 @@ impl PlatformNetwork for MacosWireGuardToolsAdapter {
         Ok(NetworkPlan {
             steps: vec![step(
                 NetworkOperation::EmergencyStop,
-                format!("Stop {interface} and remove Pubkegaard routes"),
-                Some(format!("wg-quick down {interface}")),
+                format!("Stop {interface} bundled backend and remove Pubkegaard routes"),
+                Some(format!("pkill -f boringtun-cli.*{interface}; rm -f /var/run/wireguard/{interface}.sock")),
             )],
             rollback: Vec::new(),
         })
@@ -298,8 +301,8 @@ mod tests {
     }
 
     #[test]
-    fn macos_wireguard_tools_adapter_plans_backend_checks() {
-        let plan = MacosWireGuardToolsAdapter.verify_backend().unwrap();
+    fn macos_bundled_wireguard_adapter_plans_backend_checks() {
+        let plan = MacosBundledWireGuardAdapter.verify_backend().unwrap();
         assert_eq!(plan.steps.len(), 2);
     }
 }

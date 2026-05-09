@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DMG="$ROOT/releases/Pubkegaard_0.1.0_aarch64.dmg"
+BACKEND="$ROOT/apps/pubkegaard-desktop/src-tauri/binaries/boringtun-cli-aarch64-apple-darwin"
 
 echo "Pubkegaard macOS two-peer preflight"
 echo "repo: $ROOT"
@@ -12,15 +13,11 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-command -v wg >/dev/null 2>&1 || {
-  echo "error: missing wg. Install with: brew install wireguard-tools" >&2
+if [[ ! -x "$BACKEND" ]]; then
+  echo "error: missing bundled WireGuard backend at $BACKEND" >&2
+  echo "run: ./scripts/build-bundled-wireguard-backend.sh" >&2
   exit 1
-}
-
-command -v wg-quick >/dev/null 2>&1 || {
-  echo "error: missing wg-quick. Install with: brew install wireguard-tools" >&2
-  exit 1
-}
+fi
 
 if [[ ! -f "$DMG" ]]; then
   echo "error: missing DMG at $DMG" >&2
@@ -29,7 +26,7 @@ fi
 
 hdiutil verify "$DMG" >/dev/null
 
-echo "ok: WireGuard tooling is installed"
+echo "ok: bundled WireGuard backend is present"
 echo "ok: DMG verifies"
 echo
 echo "Two-peer validation:"
