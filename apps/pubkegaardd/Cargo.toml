@@ -11,6 +11,8 @@ anyhow.workspace = true
 clap.workspace = true
 pubkegaard-firewall = { path = "../../crates/pubkegaard-firewall" }
 pubkegaard-policy = { path = "../../crates/pubkegaard-policy" }
+pubkegaard-platform = { path = "../../crates/pubkegaard-platform" }
 pubkegaard-types = { path = "../../crates/pubkegaard-types" }
 pubkegaard-wireguard = { path = "../../crates/pubkegaard-wireguard" }
+serde.workspace = true
 serde_json.workspace = true

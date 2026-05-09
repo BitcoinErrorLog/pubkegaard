@@ -2,11 +2,15 @@
 resolver = "2"
 members = [
     "apps/pubkegaard",
+    "apps/pubkegaard-desktop/src-tauri",
     "apps/pubkegaard-relay",
     "apps/pubkegaardd",
+    "crates/pubkegaard-auth",
     "crates/pubkegaard-discovery",
     "crates/pubkegaard-firewall",
+    "crates/pubkegaard-keys",
     "crates/pubkegaard-policy",
+    "crates/pubkegaard-platform",
     "crates/pubkegaard-types",
     "crates/pubkegaard-wireguard",
     "tests/integration",
@@ -24,8 +28,10 @@ base64 = "0.22"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ipnet = { version = "2", features = ["serde"] }
+keyring = "3"
 pkarr = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 url = "2"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }

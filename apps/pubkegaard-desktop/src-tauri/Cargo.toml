@@ -1,0 +1,23 @@
+[package]
+name = "pubkegaard-desktop"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+keyring.workspace = true
+pubkegaard-auth = { path = "../../../crates/pubkegaard-auth" }
+pubkegaard-keys = { path = "../../../crates/pubkegaard-keys" }
+pubkegaard-types = { path = "../../../crates/pubkegaard-types" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

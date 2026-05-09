@@ -10,7 +10,9 @@ rust-version.workspace = true
 base64.workspace = true
 pubkegaard-discovery = { path = "../../crates/pubkegaard-discovery" }
 pubkegaard-firewall = { path = "../../crates/pubkegaard-firewall" }
+pubkegaard-keys = { path = "../../crates/pubkegaard-keys" }
 pubkegaard-policy = { path = "../../crates/pubkegaard-policy" }
+pubkegaard-platform = { path = "../../crates/pubkegaard-platform" }
 pubkegaard-types = { path = "../../crates/pubkegaard-types" }
 pubkegaard-wireguard = { path = "../../crates/pubkegaard-wireguard" }
 serde_json.workspace = true

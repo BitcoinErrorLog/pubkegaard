@@ -3,10 +3,12 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use pubkegaard_discovery::{pointer_for, verify_document_bytes};
     use pubkegaard_firewall::FirewallPlan;
+    use pubkegaard_keys::{generate_noise_control_key, generate_wireguard_transport_key};
+    use pubkegaard_platform::{LinuxNetworkAdapter, PlatformNetwork};
     use pubkegaard_policy::EffectivePolicy;
     use pubkegaard_types::{
-        Device, DiscoveryDocument, Endpoint, Permissions, PubkyId, Route, RouteKind, TrustGrant,
-        WireGuardPublicKey, DISCOVERY_TYPE, VERSION_1,
+        Device, DiscoveryDocument, Endpoint, NoiseControlPublicKey, Permissions, PubkyId, Route,
+        RouteKind, TrustGrant, WireGuardPublicKey, DISCOVERY_TYPE, VERSION_1,
     };
     use pubkegaard_wireguard::PeerConfig;
 
@@ -24,6 +26,8 @@ mod tests {
             expires_at_ms: 10_000,
             devices: vec![Device {
                 device_id: "dev1".into(),
+                noise_control_key: NoiseControlPublicKey::parse(STANDARD.encode([9u8; 32]))
+                    .unwrap(),
                 wg_public_key: WireGuardPublicKey::parse(STANDARD.encode([8u8; 32])).unwrap(),
                 addresses: vec!["100.88.1.2/32".parse().unwrap()],
                 endpoints: vec![Endpoint {
@@ -70,5 +74,22 @@ mod tests {
         let peer = "100.88.1.2/32".parse().unwrap();
         let plan = FirewallPlan::mesh_peer("pkg0", peer);
         assert_eq!(plan.rollback.len(), 1);
+    }
+
+    #[test]
+    fn generated_control_and_transport_keys_validate() {
+        let control = generate_noise_control_key();
+        let wireguard = generate_wireguard_transport_key();
+        assert!(control.public_noise_control_key().is_ok());
+        assert!(wireguard.public_wireguard_key().is_ok());
+    }
+
+    #[test]
+    fn linux_adapter_plans_emergency_stop() {
+        let plan = LinuxNetworkAdapter.emergency_stop("pkg0").unwrap();
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.description.contains("Stop WireGuard")));
     }
 }

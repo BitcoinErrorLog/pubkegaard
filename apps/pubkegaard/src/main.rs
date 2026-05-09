@@ -2,6 +2,7 @@ use std::{fs, path::PathBuf, str::FromStr};
 
 use clap::{Parser, Subcommand};
 use pubkegaard_discovery::CompactPointer;
+use pubkegaard_keys::{generate_noise_control_key, generate_wireguard_transport_key, SessionScope};
 use pubkegaard_types::{PubkyId, TrustGrant};
 
 #[derive(Debug, Parser)]
@@ -28,6 +29,10 @@ enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
+    Keys {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     Allow {
         #[command(subcommand)]
         command: AllowCommand,
@@ -49,6 +54,12 @@ enum PeerCommand {
 #[derive(Debug, Subcommand)]
 enum AllowCommand {
     Mesh { identity: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum KeyCommand {
+    GenerateDevice,
+    SessionScope,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,6 +105,28 @@ fn main() -> anyhow::Result<()> {
                 println!("peer {}", identity);
             }
             PeerCommand::List => println!("[]"),
+        },
+        Command::Keys { command } => match command {
+            KeyCommand::GenerateDevice => {
+                let control = generate_noise_control_key();
+                let wireguard = generate_wireguard_transport_key();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "noise_control_public_key": control.public_key_base64,
+                        "wireguard_public_key": wireguard.public_key_base64,
+                        "private_keys": {
+                            "storage": "store private_key_base64 fields in the OS key vault, not in discovery"
+                        }
+                    }))?
+                );
+            }
+            KeyCommand::SessionScope => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&SessionScope::pubkegaard_read_write())?
+                );
+            }
         },
         Command::Allow { command } => match command {
             AllowCommand::Mesh { identity } => {

@@ -14,6 +14,8 @@ pub enum ValidationError {
     InvalidIdentity(String),
     #[error("invalid WireGuard public key")]
     InvalidWireGuardKey,
+    #[error("invalid pubky-noise control public key")]
+    InvalidNoiseControlKey,
     #[error("unsupported type: {0}")]
     UnsupportedType(String),
     #[error("unsupported version: {0}")]
@@ -129,6 +131,46 @@ impl<'de> Deserialize<'de> for WireGuardPublicKey {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NoiseControlPublicKey(String);
+
+impl NoiseControlPublicKey {
+    pub fn parse(input: impl Into<String>) -> Result<Self, ValidationError> {
+        let value = input.into();
+        let raw = value.strip_prefix("noise:").unwrap_or(&value);
+        let bytes = STANDARD
+            .decode(raw)
+            .map_err(|_| ValidationError::InvalidNoiseControlKey)?;
+        if bytes.len() != 32 {
+            return Err(ValidationError::InvalidNoiseControlKey);
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_base64(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for NoiseControlPublicKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_base64())
+    }
+}
+
+impl<'de> Deserialize<'de> for NoiseControlPublicKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Endpoint {
     pub host: String,
@@ -153,6 +195,7 @@ pub struct Route {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Device {
     pub device_id: String,
+    pub noise_control_key: NoiseControlPublicKey,
     pub wg_public_key: WireGuardPublicKey,
     pub addresses: Vec<IpNet>,
     pub endpoints: Vec<Endpoint>,
@@ -270,6 +313,16 @@ mod tests {
         assert_eq!(
             WireGuardPublicKey::parse(STANDARD.encode([7u8; 31])),
             Err(ValidationError::InvalidWireGuardKey)
+        );
+    }
+
+    #[test]
+    fn noise_control_key_must_decode_to_32_bytes() {
+        let valid = STANDARD.encode([9u8; 32]);
+        assert!(NoiseControlPublicKey::parse(valid).is_ok());
+        assert_eq!(
+            NoiseControlPublicKey::parse(STANDARD.encode([9u8; 31])),
+            Err(ValidationError::InvalidNoiseControlKey)
         );
     }
 

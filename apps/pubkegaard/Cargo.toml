@@ -10,6 +10,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 pubkegaard-discovery = { path = "../../crates/pubkegaard-discovery" }
+pubkegaard-keys = { path = "../../crates/pubkegaard-keys" }
 pubkegaard-policy = { path = "../../crates/pubkegaard-policy" }
 pubkegaard-types = { path = "../../crates/pubkegaard-types" }
 serde_json.workspace = true

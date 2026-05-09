@@ -1,4 +1,7 @@
 target/
+node_modules/
+apps/pubkegaard-desktop/dist/assets/
+apps/pubkegaard-desktop/src-tauri/gen/
 ._*
 .DS_Store
 *.log

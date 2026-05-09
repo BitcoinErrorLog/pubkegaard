@@ -88,7 +88,7 @@ impl InterfaceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pubkegaard_types::{Permissions, Route};
+    use pubkegaard_types::{NoiseControlPublicKey, Permissions, Route};
 
     #[test]
     fn renders_mesh_peer() {
@@ -96,6 +96,10 @@ mod tests {
             WireGuardPublicKey::parse("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=").unwrap();
         let device = Device {
             device_id: "dev1".into(),
+            noise_control_key: NoiseControlPublicKey::parse(
+                "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+            )
+            .unwrap(),
             wg_public_key: key,
             addresses: vec!["100.88.1.2/32".parse().unwrap()],
             endpoints: vec![Endpoint {

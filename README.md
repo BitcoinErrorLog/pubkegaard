@@ -15,8 +15,8 @@ Pubkegaard treats implemented Pubky SDK and PKARR behavior as the compatibility 
 ## Workspace
 
 - `docs/spec/` contains the protocol and launch specifications.
-- `crates/` contains reusable Rust libraries.
-- `apps/` contains the CLI, daemon, and relay binaries.
+- `crates/` contains reusable Rust libraries for types, discovery, policy, keys, platform adapters, WireGuard, and firewall planning.
+- `apps/` contains the CLI, desktop app, daemon, and relay binaries.
 - `tests/integration/` contains cross-crate launch-path tests.
 
 ## Current Transport
